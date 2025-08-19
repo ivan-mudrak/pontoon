@@ -1,0 +1,16 @@
+# SonarQube
+**/.scannerwork
+
+# Rust
+.muslrust
+**/target/
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea
+.vscode
+.emacs*
+*.sublime-project
+*.sublime-workspace

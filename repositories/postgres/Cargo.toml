@@ -1,0 +1,12 @@
+[package]
+name = "postgres_database"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+repositories.workspace = true
+types.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+tracing.workspace = true
