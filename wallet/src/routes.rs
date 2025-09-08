@@ -6,8 +6,8 @@ use actix_web::{
 use repositories::wallet::WalletRepository;
 use serde::Serialize;
 use types::{
-    client::ApiKey,
-    redact::Masked,
+    api_key::ApiKey,
+    secret::mask::Masked,
     user::{User, UserId},
 };
 use uuid::Uuid;

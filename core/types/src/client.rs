@@ -1,9 +1,16 @@
 use crate::{
-    encrypt::{data_key, master_key::MasterKey, Encrypted},
-    error::{Error, ErrorKind},
-    redact::{Maskable, Masked, Redacted},
+    api_key::ApiKey,
+    encrypt::{master_key::MasterKey, Aes256Key, Encrypted},
+    error::Error,
+    secret::{
+        mask::{expose_masked, Masked},
+        redact::{expose_redacted, Redacted},
+    },
 };
-use base64::{engine::general_purpose::{URL_SAFE_NO_PAD, STANDARD}, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -43,7 +50,7 @@ impl From<Uuid> for ClientId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Client {
     id: ClientId,
     pub name: String,
@@ -66,7 +73,7 @@ impl Client {
     }
 
     pub fn encrypt(&self, master_key: &MasterKey) -> Result<encrypt::EncryptedClient, Error> {
-        let encrypted_credentials = self.credentials.clone().encrypt(&master_key)?;
+        let encrypted_credentials = self.credentials.encrypt(&master_key)?;
 
         Ok(encrypt::EncryptedClient {
             id: self.id.clone(),
@@ -76,34 +83,21 @@ impl Client {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow, sqlx::Type)]
-#[serde(transparent)]
-#[sqlx(transparent)]
-pub struct ApiKey(Uuid);
-
-impl From<Uuid> for ApiKey {
-    fn from(api_key: Uuid) -> Self {
-        ApiKey(api_key)
-    }
-}
-
-impl From<ApiKey> for Uuid {
-    fn from(api_key: ApiKey) -> Self {
-        api_key.0
-    }
-}
-
-impl Maskable for ApiKey {
-    fn mask(&self) -> String {
-        format!("{}{}", &self.0.to_string()[..3], "[***]")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Credentials {
+    #[serde(serialize_with = "expose_masked")]
     pub api_key: Masked<ApiKey>,
+    #[serde(serialize_with = "expose_redacted")]
     secret: Redacted<String>,
 }
+
+impl PartialEq for Credentials {
+    fn eq(&self, other: &Self) -> bool {
+        self.api_key.eq(&other.api_key)
+    }
+}
+
+impl Eq for Credentials {}
 
 impl Credentials {
     pub fn generate() -> Self {
@@ -120,12 +114,11 @@ impl Credentials {
     pub fn check_authentication(&self, message: &str, signature: &str) -> Result<(), Error> {
         tracing::debug!("Checking signature for a message: {}", message);
 
-        let credentials = self.clone();
-        let key = credentials.secret.inner_ref().as_bytes();
+        let key = self.secret.expose().as_bytes();
 
         // Create a HMAC SHA-256 hasher
         let mut hasher =
-            Hmac::<Sha256>::new_from_slice(key).map_err(|_| ErrorKind::InvalidSignature)?;
+            Hmac::<Sha256>::new_from_slice(key).map_err(|_| Error::InvalidSignature)?;
 
         // Update the hasher with the message
         hasher.update(message.as_bytes());
@@ -134,18 +127,18 @@ impl Credentials {
         // NOTE: It should be URL_SAFE_NO_PAD but most of online tools do STANDARD
         hasher
             .verify_slice(&STANDARD.decode(signature.as_bytes())?)
-            .map_err(|_| ErrorKind::InvalidSignature)?;
+            .map_err(|_| Error::InvalidSignature)?;
 
         Ok(())
     }
 
-    pub fn encrypt(self, master_key: &MasterKey) -> Result<encrypt::EncryptedCredentials, Error> {
-        let data_key = data_key::DataEncryptionKey::generate();
-        let encrypted_secret = data_key.encrypt(&self.secret.inner_ref())?;
+    pub fn encrypt(&self, master_key: &MasterKey) -> Result<encrypt::EncryptedCredentials, Error> {
+        let data_key = Aes256Key::generate();
+        let encrypted_secret = data_key.encrypt(&self.secret.expose())?;
         let encrypted_data_key = master_key.encrypt(&data_key.to_string())?;
 
         Ok(encrypt::EncryptedCredentials {
-            api_key: self.api_key.inner_ref().to_owned().into(),
+            api_key: self.api_key.expose().to_owned().into(),
             encrypted_secret,
             encrypted_data_key,
         })
@@ -158,7 +151,7 @@ pub mod encrypt {
     use sqlx::{postgres::PgRow, FromRow, Row};
     use std::str::FromStr;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
     pub struct EncryptedClient {
         pub id: ClientId,
         pub name: String,
@@ -176,7 +169,7 @@ pub mod encrypt {
         }
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow, sqlx::Type)]
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow, sqlx::Type)]
     pub struct EncryptedCredentials {
         pub api_key: Masked<ApiKey>,
         pub encrypted_secret: Encrypted,
@@ -186,7 +179,7 @@ pub mod encrypt {
     impl EncryptedCredentials {
         pub fn decrypt(self, master_key: &MasterKey) -> Result<Credentials, Error> {
             let str = master_key.decrypt(&self.encrypted_data_key)?;
-            let data_key = data_key::DataEncryptionKey::from_str(&str)?;
+            let data_key = Aes256Key::from_str(&str)?;
             let secret = data_key.decrypt(&self.encrypted_secret)?;
             Ok(Credentials {
                 api_key: self.api_key,

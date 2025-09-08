@@ -15,6 +15,7 @@ pub fn make_server(ctx: Context) -> anyhow::Result<Server> {
         App::new()
             .app_data(data.clone())
             .wrap(middleware::auth::Auth)
+            .wrap(middleware::request::RequestId)
             .wrap(TracingLogger::default())
             .service(web::resource("/wallet/register").route(web::post().to(routes::register_user)))
             .service(

@@ -1,8 +1,9 @@
 use crate::PostgresPool;
 use repositories::wallet::WalletRepository;
 use types::{
-    client::{encrypt::EncryptedCredentials, ApiKey},
-    redact::Masked,
+    api_key::ApiKey,
+    client::encrypt::EncryptedCredentials,
+    secret::mask::Masked,
     user::{encrypt::EncryptedUser, UserId},
 };
 use uuid::Uuid;
@@ -13,7 +14,7 @@ impl WalletRepository for PostgresPool {
         api_key: &Masked<ApiKey>,
     ) -> anyhow::Result<Option<EncryptedCredentials>> {
         let res = sqlx::query_as("SELECT * FROM credentials WHERE api_key = $1")
-            .bind::<Uuid>(api_key.inner_ref().clone().into())
+            .bind::<Uuid>(api_key.expose().clone().into())
             .fetch_optional(&self.pg_pool)
             .await?;
 
@@ -33,7 +34,7 @@ impl WalletRepository for PostgresPool {
         WHERE api_key = $2"#,
         )
         .bind(encrypted_user.id)
-        .bind::<Uuid>(api_key.inner_ref().clone().into())
+        .bind::<Uuid>(api_key.expose().clone().into())
         .bind(encrypted_user.encrypted_signing_key.encrypted_private_key)
         .bind(encrypted_user.encrypted_signing_key.encrypted_data_key)
         .execute(&self.pg_pool)

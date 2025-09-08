@@ -1,6 +1,7 @@
 use types::{
-    client::{encrypt::EncryptedCredentials, ApiKey},
-    redact::Masked,
+    api_key::ApiKey,
+    client::encrypt::EncryptedCredentials,
+    secret::mask::Masked,
     user::{encrypt::EncryptedUser, UserId},
 };
 

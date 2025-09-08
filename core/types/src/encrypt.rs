@@ -1,5 +1,65 @@
+use crate::error::Error;
+use aes_gcm::{
+    aead::{generic_array::GenericArray, Aead, AeadCore, Key, KeyInit, OsRng},
+    Aes256Gcm,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
+use std::str::FromStr;
+
+pub struct Aes256Key(SecretBox<[u8; 32]>);
+
+impl Aes256Key {
+    pub fn generate() -> Self {
+        let key = Aes256Gcm::generate_key(OsRng);
+        Self(SecretBox::new(Box::new(key.into())))
+    }
+    fn cipher(&self) -> Aes256Gcm {
+        let key: &Key<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(self.0.expose_secret());
+        Aes256Gcm::new(key)
+    }
+
+    pub fn encrypt(&self, data: &str) -> Result<Encrypted, Error> {
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
+        let ciphertext = self.cipher().encrypt(&nonce, data.as_bytes())?;
+
+        Ok(Encrypted {
+            nonce: nonce.to_vec(),
+            ciphertext,
+        })
+    }
+
+    pub fn decrypt(&self, encrypted: &Encrypted) -> Result<String, Error> {
+        let nonce = GenericArray::from_slice(&encrypted.nonce);
+        let plaintext = self
+            .cipher()
+            .decrypt(&nonce, encrypted.ciphertext.as_ref())?;
+        Ok(String::from_utf8(plaintext)?)
+    }
+}
+
+impl FromStr for Aes256Key {
+    type Err = Error;
+
+    fn from_str(str: &str) -> Result<Self, Self::Err> {
+        let bytes = URL_SAFE_NO_PAD.decode(str)?;
+        let key = Key::<Aes256Gcm>::from_slice(&bytes).to_owned();
+
+        Ok(Self(SecretBox::new(Box::new(key.into()))))
+    }
+}
+
+impl Display for Aes256Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            URL_SAFE_NO_PAD.encode(self.0.expose_secret().as_slice())
+        )
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Encrypted {
@@ -67,84 +127,16 @@ pub mod postgres {
     }
 }
 
-pub mod data_key {
-    use crate::{encrypt::Encrypted, error::Error, redact::Redacted};
-    use aes_gcm::{
-        aead::{generic_array::GenericArray, Aead, AeadCore, KeyInit, OsRng},
-        Aes256Gcm, KeySizeUser,
-    };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    use std::str::FromStr;
-
-    pub struct DataEncryptionKey {
-        key: Redacted<GenericArray<u8, <Aes256Gcm as KeySizeUser>::KeySize>>,
-        pub cipher: Redacted<Aes256Gcm>,
-    }
-
-    impl DataEncryptionKey {
-        pub fn generate() -> Self {
-            let key = Aes256Gcm::generate_key(OsRng);
-            let cipher = Aes256Gcm::new(&key);
-            Self {
-                key: Redacted::from(key),
-                cipher: Redacted::from(cipher),
-            }
-        }
-
-        pub fn encrypt(&self, data: &str) -> Result<Encrypted, Error> {
-            let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-            let ciphertext = self.cipher.inner_ref().encrypt(&nonce, data.as_bytes())?;
-
-            Ok(Encrypted {
-                nonce: nonce.to_vec(),
-                ciphertext,
-            })
-        }
-
-        pub fn decrypt(&self, encrypted: &Encrypted) -> Result<String, Error> {
-            let nonce = GenericArray::from_slice(&encrypted.nonce);
-            let plaintext = self
-                .cipher
-                .inner_ref()
-                .decrypt(&nonce, encrypted.ciphertext.as_ref())?;
-            Ok(String::from_utf8(plaintext)?)
-        }
-    }
-
-    impl FromStr for DataEncryptionKey {
-        type Err = Error;
-
-        fn from_str(str: &str) -> Result<Self, Self::Err> {
-            let bytes = URL_SAFE_NO_PAD.decode(str)?;
-            let key = GenericArray::from_slice(&bytes);
-            let cipher = Aes256Gcm::new(key);
-
-            Ok(Self {
-                key: Redacted::from(key.to_owned()),
-                cipher: Redacted::from(cipher),
-            })
-        }
-    }
-
-    impl ToString for DataEncryptionKey {
-        fn to_string(&self) -> String {
-            URL_SAFE_NO_PAD.encode(self.key.inner_ref().as_slice())
-        }
-    }
-}
-
 pub mod master_key {
-    use crate::{encrypt::Encrypted, env, error::Error, redact::Redacted};
-    use aes_gcm::{
-        aead::{generic_array::GenericArray, Aead, AeadCore, KeyInit, OsRng},
-        Aes256Gcm, Key,
+    use crate::{
+        encrypt::{Aes256Key, Encrypted},
+        env,
+        error::Error,
     };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use std::str::FromStr;
 
-    #[derive(Debug, Clone)]
     pub struct MasterKey {
-        pub cipher: Redacted<Aes256Gcm>,
+        key: Aes256Key,
     }
 
     pub fn from_file<'de, D>(deserializer: D) -> Result<MasterKey, D::Error>
@@ -155,59 +147,34 @@ pub mod master_key {
         MasterKey::from_file(file_path).map_err(|err| serde::de::Error::custom(err))
     }
 
-    impl FromStr for MasterKey {
-        type Err = Error;
-
-        fn from_str(str: &str) -> Result<Self, Self::Err> {
-            let bytes = URL_SAFE_NO_PAD.decode(str)?;
-            let key = Key::<Aes256Gcm>::from_slice(&bytes);
-            let cipher = Aes256Gcm::new(&key);
-
-            Ok(Self {
-                cipher: Redacted::from(cipher),
-            })
-        }
-    }
-
     impl MasterKey {
         pub fn from_env() -> Result<Self, Error> {
             let str = env::read_from_env_file::<String>("MASTER_KEY")?;
-            MasterKey::from_str(&str)
+            Aes256Key::from_str(&str).map(|key| MasterKey { key })
         }
 
         pub fn from_file(file_path: String) -> Result<Self, Error> {
             let str = env::read_file(&file_path)?;
-            MasterKey::from_str(&str)
+            Aes256Key::from_str(&str).map(|key| MasterKey { key })
         }
 
         pub fn encrypt(&self, data: &str) -> Result<Encrypted, Error> {
-            let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-            let ciphertext = self.cipher.inner_ref().encrypt(&nonce, data.as_bytes())?;
-
-            Ok(Encrypted {
-                nonce: nonce.to_vec(),
-                ciphertext,
-            })
+            self.key.encrypt(data)
         }
 
         pub fn decrypt(&self, encrypted: &Encrypted) -> Result<String, Error> {
-            let nonce = GenericArray::from_slice(&encrypted.nonce);
-            let plaintext = self
-                .cipher
-                .inner_ref()
-                .decrypt(&nonce, encrypted.ciphertext.as_ref())?;
-            Ok(String::from_utf8(plaintext)?)
+            self.key.decrypt(encrypted)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::data_key::*;
+    use crate::encrypt::Aes256Key;
 
     #[test]
     fn test_data_encryption_key_encrypt_decrypt() {
-        let key = DataEncryptionKey::generate();
+        let key = Aes256Key::generate();
         let plaintext = "The quick brown fox jumps over the lazy dog.";
         let encrypted = key.encrypt(plaintext).expect("encryption failed");
         let decrypted = key.decrypt(&encrypted).expect("decryption failed");
@@ -216,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_data_encryption_key_encrypt_decrypt_with_conversion() {
-        let key = DataEncryptionKey::generate();
+        let key = Aes256Key::generate();
         let plaintext = "The quick brown fox jumps over the lazy dog.";
         let encrypted = key.encrypt(plaintext).expect("encryption failed");
         let encrypted_str: String = encrypted.into();

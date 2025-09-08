@@ -1,8 +1,5 @@
-use crate::{
-    encrypt::{data_key, master_key::MasterKey},
-    error::{Error, ErrorKind},
-    redact::Redacted,
-};
+use crate::encrypt::Aes256Key;
+use crate::{encrypt::master_key::MasterKey, error::Error};
 use rsa::{
     pkcs1v15,
     pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding},
@@ -46,7 +43,6 @@ impl From<Uuid> for UserId {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
 pub struct User {
     id: UserId,
     pub signing_key: SigningKey,
@@ -73,9 +69,8 @@ impl User {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
 pub struct SigningKey {
-    pub private_key: Redacted<RsaPrivateKey>,
+    pub private_key: RsaPrivateKey,
 }
 
 impl SigningKey {
@@ -85,38 +80,34 @@ impl SigningKey {
         let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
         tracing::debug!("Generated RSA key");
 
-        Ok(SigningKey {
-            private_key: Redacted::from(private_key),
-        })
+        Ok(SigningKey { private_key })
     }
 
     pub fn public_key_pem(&self) -> Result<String, Error> {
         Ok(self
             .private_key
-            .inner_ref()
             .to_public_key()
             .to_public_key_pem(LineEnding::LF)?)
     }
 
     pub fn sign_message(&self, message: &str) -> String {
-        let mut signing_key =
-            pkcs1v15::SigningKey::<Sha256>::new(self.private_key.inner_ref().clone());
+        let mut signing_key = pkcs1v15::SigningKey::<Sha256>::new(self.private_key.clone());
         signing_key.sign(message.as_bytes()).to_string()
     }
 
     pub fn verify_signature(&self, message: &str, signature: &[u8]) -> Result<bool, Error> {
         let signature =
-            pkcs1v15::Signature::try_from(signature).map_err(|_| ErrorKind::InvalidSignature)?;
-        let signing_key = pkcs1v15::SigningKey::<Sha256>::new(self.private_key.inner_ref().clone());
+            pkcs1v15::Signature::try_from(signature).map_err(|_| Error::InvalidSignature)?;
+        let signing_key = pkcs1v15::SigningKey::<Sha256>::new(self.private_key.clone());
         let verifying_key = signing_key.verifying_key();
         let is_valid = verifying_key.verify(message.as_bytes(), &signature).is_ok();
         Ok(is_valid)
     }
 
     pub fn encrypt(&self, master_key: &MasterKey) -> Result<encrypt::EncryptedSigningKey, Error> {
-        let data_key = data_key::DataEncryptionKey::generate();
+        let data_key = Aes256Key::generate();
 
-        let private_pem = self.private_key.inner_ref().to_pkcs8_pem(LineEnding::LF)?;
+        let private_pem = self.private_key.to_pkcs8_pem(LineEnding::LF)?;
 
         let encrypted_private_key = data_key.encrypt(&private_pem)?;
         let encrypted_data_key = master_key.encrypt(&data_key.to_string())?;
@@ -130,8 +121,9 @@ impl SigningKey {
 
 pub mod encrypt {
     use super::*;
+    use crate::encrypt::Aes256Key;
     use crate::{
-        encrypt::{data_key, master_key::MasterKey, Encrypted},
+        encrypt::{master_key::MasterKey, Encrypted},
         user::UserId,
     };
     use rsa::{pkcs8::DecodePrivateKey, RsaPrivateKey};
@@ -176,14 +168,12 @@ pub mod encrypt {
     impl EncryptedSigningKey {
         pub fn decrypt(self, master_key: &MasterKey) -> Result<SigningKey, Error> {
             let data_key_str = master_key.decrypt(&self.encrypted_data_key)?;
-            let data_key = data_key::DataEncryptionKey::from_str(&data_key_str)?;
+            let data_key = Aes256Key::from_str(&data_key_str)?;
 
             let private_pem = data_key.decrypt(&self.encrypted_private_key)?;
             let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem.as_str())?;
 
-            Ok(SigningKey {
-                private_key: Redacted::from(private_key),
-            })
+            Ok(SigningKey { private_key })
         }
     }
 }

@@ -5,10 +5,7 @@ use actix_web::{
 };
 use repositories::client::ClientRepository;
 use serde::{Deserialize, Serialize};
-use types::{
-    client::{ApiKey, Client},
-    redact::Masked,
-};
+use types::{api_key::ApiKey, client::Client, secret::mask::Masked};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateClientRequest {

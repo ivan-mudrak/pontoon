@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
-    tracing::info!("Starting auth service with config: {:?}", ctx.config);
+    tracing::info!("Starting service with config: {:?}", ctx.config);
 
     let server = make_server(ctx)?;
 
